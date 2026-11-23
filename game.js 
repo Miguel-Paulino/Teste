@@ -1,0 +1,354 @@
+(() => {
+'use strict';
+const TS = 16, MW = 56, MH = 40, HOUR = 4, ENDDAY = 22, SAVE = 'lunarcolony.v1';
+const $ = id => document.getElementById(id);
+const cv = $('c'), cx = cv.getContext('2d');
+let G, tiles, mapCv, mapCx, zoom = 3, open = false, running = false, keys = {}, dir = [0, 1], step = 0, cd = 0, au = null, muted = false, hudT = 0, toastT = 0, lastEv = -1, closable = true;
+const SOLID = new Set([1, 2, 3, 4, 5, 6]);
+
+/* ---------- utilidades ---------- */
+const rng = s => () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296;
+const hash = (x, y) => { let h = (x * 374761393 + y * 668265263) >>> 0; h = ((h ^ (h >> 13)) * 1274126177) >>> 0; return (h ^ (h >> 16)) >>> 0; };
+const lv = k => G.b.filter(b => b.k === k).reduce((s, b) => s + b.l, 0);
+const has = k => G.b.some(b => b.k === k);
+const cap = () => 150 + 100 * lv('sto');
+const habCap = () => 3 + 3 * lv('hab');
+const costTxt = c => Object.entries(c).map(([k, v]) => v + ' ' + RES[k]).join(', ');
+const canPay = c => Object.entries(c).every(([k, v]) => G.res[k] >= v);
+const pay = c => Object.entries(c).forEach(([k, v]) => G.res[k] -= v);
+const gain = c => Object.entries(c).forEach(([k, v]) => G.res[k] = Math.min(cap(), G.res[k] + v));
+const scale = (c, n) => Object.fromEntries(Object.entries(c).map(([k, v]) => [k, Math.ceil(v * n)]));
+const addF = f => f && Object.entries(f).forEach(([k, v]) => G.f[k] = (G.f[k] || 0) + v);
+const bAt = (x, y) => G.b.find(b => b.x === x && b.y === y);
+
+/* ---------- mapa ---------- */
+function genMap() {
+  const r = rng(2026), t = new Uint8Array(MW * MH);
+  for (let y = 0; y < MH; y++) for (let x = 0; x < MW; x++) {
+    let v = 0; const d = Math.hypot(x - 28, y - 22), q = r();
+    if (x < 1 || y < 1 || x >= MW - 1 || y >= MH - 1) v = 1;
+    else if (d > 9) {
+      if (x < 15) v = q < .28 ? 1 : q < .36 ? 3 : 0;
+      else if (x > 40 && y > 26) v = q < .12 ? 1 : q < .3 ? 2 : 0;
+      else v = q < .07 ? 1 : q < .09 ? 3 : q < .1 ? 2 : 0;
+    }
+    t[y * MW + x] = v;
+  }
+  for (let x = 1; x < MW - 1; x++) t[11 * MW + x] = (x >= 27 && x <= 29) ? 5 : 1;
+  for (let y = 12; y < 22; y++) for (let x = 27; x <= 29; x++) t[y * MW + x] = 0;
+  for (let y = 1; y < 11; y++) for (let x = 1; x < MW - 1; x++) t[y * MW + x] = (x >= 20 && x <= 36 && y >= 2) ? (r() < .15 ? 4 : 0) : 1;
+  for (const n of NPCS) t[n.y * MW + n.x] = 0;
+  t[3 * MW + 28] = 6; t[6 * MW + 28] = 0;
+  return t;
+}
+const COL = {0: ['#8a8a92', '#7f7f88', '#94949c'], 1: ['#4a4a55', '#3f3f4a', '#585864'], 2: ['#8fd8f5', '#7cc8ef', '#b5eeff'], 3: ['#8a8a92', '#7f7f88', '#94949c'], 4: ['#5b4b6b', '#4a3c58', '#6e5c80'], 5: ['#2a2a35', '#2a2a35', '#2a2a35'], 6: ['#1a2a3a', '#1a2a3a', '#1a2a3a']};
+function drawTile(x, y) {
+  const t = tiles[y * MW + x], h = hash(x, y), c = COL[t][h % 3], px = x * TS, py = y * TS, m = mapCx;
+  const crater = t === 0 && Math.hypot(x - 28, y - 22) <= 9;
+  m.fillStyle = crater ? ['#7a7a84', '#70707a', '#85858f'][h % 3] : c; m.fillRect(px, py, TS, TS);
+  m.fillStyle = '#0003'; for (let i = 0; i < 3; i++) { const k = hash(x * 7 + i, y * 3 + i); m.fillRect(px + k % 14, py + (k >> 4) % 14, 2, 1); }
+  if (t === 1) { m.fillStyle = '#6a6a78'; m.fillRect(px + 1, py + 1, 14, 4); m.fillStyle = '#2c2c36'; m.fillRect(px + 1, py + 12, 14, 3); }
+  if (t === 2) { m.fillStyle = '#e8fbff'; m.fillRect(px + 3, py + 3, 3, 2); m.fillRect(px + 9, py + 8, 4, 2); m.fillStyle = '#5ab0d8'; m.fillRect(px, py + 13, 16, 3); }
+  if (t === 3) { m.fillStyle = '#e08a2e'; m.fillRect(px + 3, py + 4, 4, 4); m.fillRect(px + 9, py + 9, 4, 4); m.fillStyle = '#ffd27a'; m.fillRect(px + 4, py + 5, 1, 1); m.fillRect(px + 10, py + 10, 1, 1); }
+  if (t === 4) { m.fillStyle = '#8f7aa8'; m.fillRect(px + 2, py + 2, 12, 2); m.fillRect(px + 2, py + 2, 2, 12); m.fillStyle = '#2c2238'; m.fillRect(px + 6, py + 6, 6, 6); }
+  if (t === 5) { m.fillStyle = '#c0392b'; m.fillRect(px + 2, py + 6, 12, 4); m.fillStyle = '#555'; m.fillRect(px, py, 16, 3); m.fillRect(px, py + 13, 16, 3); }
+  if (t === 6) { m.fillStyle = '#4de8ff'; m.fillRect(px + 7, py + 2, 2, 12); m.fillRect(px + 4, py + 5, 8, 6); m.fillStyle = '#e6ffff'; m.fillRect(px + 7, py + 6, 2, 4); }
+}
+function drawMap() { for (let y = 0; y < MH; y++) for (let x = 0; x < MW; x++) drawTile(x, y); }
+function region(x, y) {
+  if (y < 11) return 'Ruínas Antigas'; if (x < 15) return 'Montanhas'; if (x > 40 && y > 26) return 'Região Sombreada (gelo)';
+  return Math.hypot(x - 28, y - 22) <= 9 ? 'Cratera Principal' : 'Planícies Lunares';
+}
+
+/* ---------- estado ---------- */
+function newGame() {
+  G = {day: 1, hour: 8, acc: 0, res: {ox: 90, wa: 70, en: 70, fo: 70, fu: 10, mi: 20, ma: 70, pa: 5}, pop: 2, mor: 70, b: [], f: {}, rp: 0, tech: {}, met: {}, done: {}, trades: 0, hp: {}, px: 28 * TS + 8, py: 22 * TS + 8, short: 0};
+  tiles = genMap();
+}
+function save(quiet) {
+  try { localStorage.setItem(SAVE, JSON.stringify({G, t: Array.from(tiles).join('')})); if (!quiet) toast('Jogo salvo.'); } catch (e) { if (!quiet) toast('Não foi possível salvar.'); }
+}
+function load() {
+  try { const s = JSON.parse(localStorage.getItem(SAVE)); if (!s) return false; G = s.G; tiles = Uint8Array.from(s.t.split('').map(Number)); return true; } catch (e) { return false; }
+}
+
+/* ---------- interface ---------- */
+function toast(m) { const t = $('toast'); t.textContent = m; t.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), 2600); }
+function menu(title, html, items, canClose = true) {
+  open = true; closable = canClose; const p = $('panel'); p.classList.add('on');
+  p.innerHTML = `<div class="box"><h3>${title}</h3><div class="tx">${html}</div><div class="opts"></div></div>`;
+  const o = p.querySelector('.opts'), all = items.slice(); if (canClose) all.push({l: 'Fechar', f: null});
+  all.forEach((it, i) => { const b = document.createElement('button'); b.textContent = (i + 1) + '. ' + it.l; b.disabled = !!it.off; b.onclick = () => { close(); it.f && it.f(); }; o.appendChild(b); });
+}
+function close() { open = false; const p = $('panel'); p.classList.remove('on'); p.innerHTML = ''; }
+function say(title, text, then) { menu(title, text, [{l: 'Continuar', f: then}], false); }
+function hud() {
+  const r = G.res, c = Math.floor, low = k => r[k] < 15 ? ' class="low"' : '';
+  const sp = (k, s) => `<span${low(k)}>${s} ${c(r[k])}</span>`;
+  $('hud').innerHTML = `<span>Dia ${G.day}/${ENDDAY} ${String(G.hour).padStart(2, '0')}h</span>` + sp('ox', 'O₂') + sp('wa', 'H₂O') + sp('en', '⚡') + sp('fo', '🌱') + sp('fu', '⛽') + sp('mi', '💎') + sp('ma', '🧱') + sp('pa', '🔧') +
+    `<span>👥 ${G.pop}/${habCap()}</span><span${G.mor < 25 ? ' class="low"' : ''}>☺ ${c(G.mor)}%</span><span>🔬 ${c(G.rp)}</span>`;
+}
+
+/* ---------- ações: construir, melhorar, minerar ---------- */
+function front() { return [Math.floor((G.px + dir[0] * 10) / TS), Math.floor((G.py - 2 + dir[1] * 10) / TS)]; }
+function npcAt(tx, ty) { return NPCS.find(n => Math.abs(n.x * TS + 8 - (tx * TS + 8)) < 12 && Math.abs(n.y * TS + 8 - (ty * TS + 8)) < 12); }
+function buildMenu() {
+  menu('Construir', 'Escolha uma estrutura. Ela será colocada à sua frente.', Object.entries(BUILD).map(([k, d]) => ({l: `${d.n} — ${costTxt(d.c)}<br><small>${d.d}</small>`.replace(/<[^>]+>/g, ' '), off: !canPay(d.c), f: () => place(k)})));
+}
+function place(k) {
+  const [x, y] = front();
+  if (x < 1 || y < 1 || x >= MW - 1 || y >= MH - 1 || tiles[y * MW + x] !== 0 || bAt(x, y) || npcAt(x, y) || (Math.floor(G.px / TS) === x && Math.floor((G.py - 2) / TS) === y)) return toast('Local ocupado. Vire para um espaço livre.');
+  pay(BUILD[k].c); G.b.push({k, x, y, l: 1}); toast(BUILD[k].n + ' construído!'); save(true);
+}
+function bMenu(b) {
+  const d = BUILD[b.k], up = scale(d.c, b.l + 1), items = [];
+  if (b.l < 3) items.push({l: `Melhorar para nível ${b.l + 1} — ${costTxt(up)}`, off: !canPay(up), f: () => { pay(up); b.l++; toast(d.n + ' agora é nível ' + b.l); }});
+  items.push({l: 'Demolir (reembolso de 50%)', f: () => { gain(scale(d.c, .5 * b.l)); G.b = G.b.filter(o => o !== b); toast('Estrutura demolida.'); }});
+  menu(`${d.n} (nível ${b.l}/3)`, d.d, items);
+}
+function mine(tx, ty) {
+  const i = ty * MW + tx, t = tiles[i];
+  if (t === 5) return toast('Portão selado. Pesquise o Escâner Profundo.');
+  if (t === 6) return relic();
+  if (cd > 0) return; cd = .3;
+  const hp = G.hp[i] ?? (t === 1 ? 3 : t === 4 ? 2 : 4);
+  if (t === 2) gain({wa: 6}); else if (t === 3) { gain({mi: 4}); if (Math.random() < .3) gain({pa: 1}); } else if (t === 1) gain({ma: 3 }); else if (t === 4) gain({pa: 2, ma: 2});
+  toast(t === 2 ? '+6 Água' : t === 3 ? '+4 Minerais' : t === 1 ? '+3 Materiais' : '+2 Peças, +2 Materiais');
+  if (hp <= 1) { tiles[i] = 0; delete G.hp[i]; drawTile(tx, ty); } else G.hp[i] = hp - 1;
+}
+function relic() {
+  if (G.f.relic || G.f.sealed) return toast('A relíquia permanece em silêncio.');
+  menu('Altar da Relíquia', 'Um núcleo antigo vibra diante de você.', [
+    {l: 'Ativar a relíquia', f: () => { addF({relic: 1, sci: 2}); G.mor -= 5; say('Relíquia ativada', 'Uma onda de luz percorre as ruínas. Dados antigos inundam os computadores da base.'); }},
+    {l: 'Selar a relíquia', f: () => { addF({sealed: 1, surv: 2}); say('Relíquia selada', 'O brilho se apaga. A Lua guardará seu segredo.'); }}
+  ]);
+}
+function talk(n) {
+  G.met[n.id] = 1;
+  if (G.done[n.id]) return say(n.n, n.hint);
+  menu(n.n, n.t, n.o.map(o => ({l: o[0], f: () => { G.done[n.id] = 1; addF(o[1]); say(n.n, o[2]); }})), false);
+}
+function interact() {
+  if (open || !running) return;
+  const [tx, ty] = front();
+  const n = NPCS.find(n => Math.hypot(n.x * TS + 8 - (G.px + dir[0] * 10), n.y * TS + 8 - (G.py - 4 + dir[1] * 10)) < 14); if (n) return talk(n);
+  const b = bAt(tx, ty); if (b) return bMenu(b);
+  if (tx >= 0 && ty >= 0 && tx < MW && ty < MH && SOLID.has(tiles[ty * MW + tx]) && !(tx === 0 || ty === 0 || tx === MW - 1 || ty === MH - 1)) return mine(tx, ty);
+}
+
+/* ---------- menu geral ---------- */
+function mainMenu() {
+  menu('Menu', `Região: ${region(Math.floor(G.px / TS), Math.floor(G.py / TS))}`, [
+    {l: 'Estatísticas da colônia', f: stats}, {l: 'Missões', f: quests}, {l: 'Tecnologias', f: techMenu}, {l: 'Comércio com a Terra', f: tradeMenu},
+    {l: 'Mapa e regiões', f: mapMenu}, {l: 'Salvar jogo', f: () => save()}, {l: 'Reiniciar campanha', f: () => menu('Reiniciar?', 'O progresso salvo será apagado.', [{l: 'Sim, reiniciar', f: () => { localStorage.removeItem(SAVE); start(false); }}])}
+  ]);
+}
+function stats() {
+  const f = G.f, L = k => lv(k);
+  menu('Estatísticas', `Colonos: ${G.pop}/${habCap()}<br>Moral: ${Math.floor(G.mor)}%<br>Construções: ${G.b.length}<br>Capacidade de estoque: ${cap()}<br>Trocas com a Terra: ${G.trades}<br>Tecnologias: ${Object.keys(G.tech).length}/4<br>Estruturas — Hab ${L('hab')}, O₂ ${L('oxy')}, Solar ${L('sol')}, Farm ${L('farm')}, Mina ${L('mine')}, Lab ${L('lab')}`, [{l: 'Voltar', f: mainMenu}], false);
+}
+function quests() {
+  const t = QUESTS.filter(q => !q.need || G.met[q.need]).map(q => `${G.done[q.id] ? '✔' : '▢'} ${q.t}`).join('<br>');
+  menu('Missões', t || 'Nenhuma missão.', [{l: 'Voltar', f: mainMenu}], false);
+}
+function techMenu() {
+  menu('Tecnologias', `Pontos de pesquisa: ${Math.floor(G.rp)}`, Object.entries(TECH).map(([k, d]) => ({l: `${d.n} (${d.rp} pts)${G.tech[k] ? ' ✔' : ''} — ${d.d}`, off: G.tech[k] || G.rp < d.rp, f: () => { G.rp -= d.rp; G.tech[k] = 1; if (k === 'scan') { for (let i = 0; i < tiles.length; i++) if (tiles[i] === 5) { tiles[i] = 0; drawTile(i % MW, Math.floor(i / MW)); } toast('Portão das Ruínas aberto!'); } else toast(d.n + ' pesquisado!'); techMenu(); }})).concat([{l: 'Voltar', f: mainMenu}]), false);
+}
+function tradeMenu() {
+  if (!has('ant')) return say('Comércio', 'Construa uma Antena de Comunicação para negociar com a Terra.', mainMenu);
+  menu('Comércio com a Terra', 'Ofertas disponíveis:', TRADES.map(t => ({l: `Dar ${costTxt(t.give)} → Receber ${costTxt(t.get)}`, off: !canPay(t.give), f: () => { pay(t.give); gain(t.get); G.trades++; toast('Troca realizada!'); tradeMenu(); }})).concat([{l: 'Voltar', f: mainMenu}]), false);
+}
+function mapMenu() {
+  const r = ['Cratera Principal', 'Planícies Lunares', 'Montanhas (minerais)', 'Região Sombreada (gelo)', G.tech.scan ? 'Ruínas Antigas (liberadas)' : 'Ruínas Antigas (bloqueadas)'];
+  menu('Mapa', r.join('<br>') + '<br><br>Cavernas e instalações abandonadas virão em futuras atualizações.', [{l: 'Voltar', f: mainMenu}], false);
+}
+
+/* ---------- simulação ---------- */
+function sun() { return Math.max(0, Math.sin((G.hour - 6) / 12 * Math.PI)); }
+function tick() {
+  const g = G, r = g.res, s = sun(), rec = g.tech.recy ? .8 : 1; let rp = 0;
+  if (++g.hour >= 24) { g.hour = 0; g.day++; onDay(); }
+  r.en -= g.b.length * .5;
+  for (const b of g.b) {
+    const l = b.l;
+    if (b.k === 'sol') r.en += 6 * l * s * (g.tech.fus ? 1.5 : 1);
+    if (b.k === 'gen' && r.fu >= .7 * l) { r.fu -= .7 * l; r.en += 8 * l; }
+  }
+  for (const b of g.b) {
+    const l = b.l, on = r.en > 0;
+    if (b.k === 'oxy' && on && r.wa >= .8 * l) { r.ox += 4 * l; r.wa -= .8 * l; }
+    if (b.k === 'farm' && on && r.wa >= 1.2 * l) { r.fo += 3 * l * (g.tech.hyd ? 1.5 : 1); r.wa -= 1.2 * l; }
+    if (b.k === 'mine' && on) { r.mi += 1.6 * l; r.ma += .6 * l; r.wa += 2 * l; }
+    if (b.k === 'lab' && on) rp += .8 * l;
+  }
+  g.rp += rp; r.ox -= g.pop * .35 * rec; r.wa -= g.pop * .2 * rec; r.fo -= g.pop * .22 * rec;
+  let short = 0; for (const k of ['ox', 'wa', 'fo', 'en']) if (r[k] <= 0) short++;
+  for (const k in r) r[k] = Math.max(0, Math.min(cap(), r[k]));
+  g.mor += short ? -1.5 * short : (g.pop <= habCap() ? .4 : -.3);
+  g.mor = Math.max(0, Math.min(100, g.mor));
+  if (r.ox <= 0) { if (++g.short >= 6) { g.short = 0; g.pop = Math.max(0, g.pop - 1); toast('Um colono não resistiu à falta de oxigênio.'); } } else g.short = 0;
+  if (g.hour % 12 === 0 && g.pop < habCap() && r.wa > 30 && r.fo > 30 && r.ox > 30 && g.mor > 40) { g.pop++; toast('Um novo colono chegou à colônia!'); }
+  checkQuests();
+  if (g.pop <= 0) finish('colapso'); else if (g.mor <= 0) finish('exodo'); else if (g.day >= ENDDAY) finish(endingKey());
+}
+function checkQuests() {
+  const ok = {
+    q1: () => has('hab'), q2: () => has('oxy') && has('sol') && has('farm'), q3: () => has('lab') && G.tech.scan,
+    q4: () => has('ant') && G.trades >= 1, q5: () => G.pop >= 6, q6: () => G.f.relic || G.f.sealed
+  };
+  for (const q of QUESTS) if (!G.done[q.id] && (!q.need || G.met[q.need]) && ok[q.id]()) { G.done[q.id] = 1; gain(q.r); addF(q.f); toast('Missão concluída: ' + q.t); }
+}
+function endingKey() {
+  const f = G.f, tn = Object.keys(G.tech).length;
+  const sc = {sci: (f.sci || 0) + lv('lab') + tn, trade: (f.trade || 0) + G.trades + lv('ant'), indep: f.indep || 0, earth: (f.earth || 0) + lv('ant'), surv: (f.surv || 0) + Math.floor(G.pop / 4)};
+  if (G.mor < 20) return 'exodo';
+  if (f.relic && sc.sci >= 5) return 'guardioes';
+  const o = [['livre', sc.indep - (sc.earth > sc.indep ? 99 : 0)], ['imperio', sc.trade], ['ciencia', sc.sci], ['pacto', sc.earth], ['lar', sc.surv + 1]].sort((a, b) => b[1] - a[1]);
+  return o[0][1] >= 4 ? (o[0][0] === 'lar' && G.pop < 5 ? 'fragil' : o[0][0]) : 'fragil';
+}
+function finish(k) {
+  running = false; localStorage.removeItem(SAVE); const e = ENDINGS[k];
+  menu('FINAL: ' + e.t, e.x + `<br><br>Dias: ${G.day} · Colonos: ${G.pop} · Moral: ${Math.floor(G.mor)}%<br>Existem 9 finais. Suas escolhas e sua gestão mudam o destino!`, [{l: 'Jogar novamente', f: () => start(false)}], false);
+}
+
+/* ---------- eventos aleatórios ---------- */
+const EVENTS = [
+  () => menu('Tempestade de poeira', 'Uma tempestade se aproxima da base!', [{l: 'Desligar sistemas (−10 energia)', f: () => { G.res.en = Math.max(0, G.res.en - 10); toast('Base protegida.'); }}, {l: 'Manter tudo ligado', f: () => { G.res.en = Math.max(0, G.res.en - (has('def') ? 10 : 35)); G.mor -= 3; toast('Dano nos painéis. Energia perdida.'); }}], false),
+  () => menu('Vazamento de oxigênio', 'Alarme! Há um vazamento no módulo principal.', [{l: 'Reparar com 2 peças', off: G.res.pa < 2, f: () => { G.res.pa -= 2; G.res.ox = Math.max(0, G.res.ox - 5); toast('Vazamento selado.'); }}, {l: 'Remendo improvisado', f: () => { G.res.ox = Math.max(0, G.res.ox - 30); G.mor -= 5; addF({surv: 1}); toast('Perdemos oxigênio.'); }}], false),
+  () => { if (has('def')) return toast('O Escudo Anti-Impacto absorveu um meteorito!'); G.res.ma = Math.max(0, G.res.ma - 20); G.res.pa = Math.max(0, G.res.pa - 2); say('Impacto de meteorito', 'Um meteorito atingiu a base: −20 materiais, −2 peças. Um escudo reduziria o dano.'); },
+  () => { if (!has('ant')) return toast('Sem antena, a Terra não consegue nem falhar em nos contatar.'); menu('Falha de comunicação', 'O contato com a Terra caiu.', [{l: 'Reparar a ligação (−3 peças)', off: G.res.pa < 3, f: () => { G.res.pa -= 3; addF({earth: 1}); toast('Contato restabelecido.'); }}, {l: 'Aproveitar o silêncio', f: () => { addF({indep: 1}); toast('A colônia decide sozinha.'); }}], false); },
+  () => menu('Conflito entre colonizadores', 'Dois colonos discutem sobre a divisão de tarefas.', [{l: 'Mediar a conversa', f: () => { G.mor += 5; addF({surv: 1}); }}, {l: 'Dar um dia de folga (−10 alimento)', f: () => { G.mor += 10; G.res.fo = Math.max(0, G.res.fo - 10); }}, {l: 'Impor ordem pelas regras da Terra', f: () => { G.mor -= 8; addF({earth: 1}); }}], false),
+  () => menu('Descoberta científica', 'Uma amostra de rocha revelou um novo composto.', [{l: 'Publicar para a Terra', f: () => { addF({earth: 1, trade: 1}); gain({mi: 15}); toast('+15 Minerais'); }}, {l: 'Guardar para a colônia', f: () => { addF({indep: 1, sci: 1}); G.rp += 10; toast('+10 Pesquisa'); }}], false),
+  () => { const ks = ['ox', 'wa', 'fo', 'en'], k = ks[Math.floor(Math.random() * 4)]; G.res[k] = Math.max(0, G.res[k] - 25); say('Escassez', `Perdemos 25 de ${RES[k]} por falhas de armazenamento. Reforce o Armazém e a produção.`); },
+  () => { if (!G.tech.scan) return toast('O Escâner está desligado.'); menu('Sinal misterioso', 'O Escâner captou um sinal vindo das Ruínas.', [{l: 'Investigar', f: () => { addF({sci: 1}); G.rp += 8; toast('+8 Pesquisa'); }}, {l: 'Ignorar', f: () => addF({surv: 1})}], false); }
+];
+function onDay() {
+  save(true);
+  if (G.day < 2 || Math.random() > .75) return;
+  let i; do { i = Math.floor(Math.random() * EVENTS.length); } while (i === lastEv); lastEv = i; setTimeout(() => !open && EVENTS[i](), 200);
+}
+
+/* ---------- movimento e colisão ---------- */
+function solid(tx, ty) { return tx < 0 || ty < 0 || tx >= MW || ty >= MH || SOLID.has(tiles[ty * MW + tx]) || !!bAt(tx, ty); }
+function hit(x, y) {
+  for (const [ox, oy] of [[-5, -3], [5, -3], [-5, 0], [5, 0]]) if (solid(Math.floor((x + ox) / TS), Math.floor((y + oy) / TS))) return true;
+  return NPCS.some(n => Math.abs(n.x * TS + 8 - x) < 11 && Math.abs(n.y * TS + 8 - (y - 4)) < 9);
+}
+function update(dt) {
+  cd = Math.max(0, cd - dt);
+  let dx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0), dy = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
+  if (dx && dy) { if (update.axis === 'x') dy = 0; else dx = 0; }
+  if (dx || dy) {
+    dir = [dx, dy]; const sp = 60 * dt;
+    if (dx && !hit(G.px + dx * sp, G.py)) G.px += dx * sp;
+    if (dy && !hit(G.px, G.py + dy * sp)) G.py += dy * sp;
+    step += dt * 8;
+  }
+  G.acc += dt; while (G.acc >= HOUR && running) { G.acc -= HOUR; tick(); }
+}
+
+/* ---------- renderização ---------- */
+function spr(x, y, c, f, st) {
+  x |= 0; y |= 0; const o = Math.floor(st) % 2;
+  cx.fillStyle = '#0005'; cx.fillRect(x - 5, y - 1, 10, 3);
+  cx.fillStyle = '#3a3f55'; cx.fillRect(x - 4, y - 4, 3, 4 - o); cx.fillRect(x + 1, y - 4, 3, 3 + o);
+  cx.fillStyle = c; cx.fillRect(x - 4, y - 12, 8, 8);
+  cx.fillStyle = '#eceff6'; cx.fillRect(x - 4, y - 18, 8, 6);
+  if (f[1] >= 0) { cx.fillStyle = '#2a6fdb'; cx.fillRect(x - 3 + f[0], y - 17, 6, 3); }
+  cx.fillStyle = '#ffd34d'; cx.fillRect(x - 1, y - 20, 2, 2);
+}
+function drawB(b, night) {
+  const x = b.x * TS, y = b.y * TS, d = BUILD[b.k];
+  cx.fillStyle = '#1b1e2b'; cx.fillRect(x, y, 16, 16); cx.fillStyle = d.col; cx.fillRect(x + 1, y + 1, 14, 14);
+  cx.fillStyle = '#fff4'; cx.fillRect(x + 1, y + 1, 14, 3 + b.l); cx.fillStyle = '#0007';
+  const k = b.k;
+  if (k === 'sol') for (let i = 0; i < 3; i++) cx.fillRect(x + 2 + i * 4, y + 6, 3, 6);
+  else if (k === 'ant') { cx.fillRect(x + 7, y + 4, 2, 9); cx.fillStyle = '#fff'; cx.fillRect(x + 5, y + 4, 6, 2); }
+  else if (k === 'farm') { cx.fillStyle = '#b8f59a'; for (let i = 0; i < 3; i++) cx.fillRect(x + 3 + i * 4, y + 8, 2, 4); }
+  else if (k === 'hab') cx.fillRect(x + 6, y + 8, 4, 7);
+  else if (k === 'oxy') { cx.fillStyle = '#fff'; cx.fillRect(x + 4, y + 7, 8, 4); }
+  else if (k === 'mine') { cx.fillRect(x + 3, y + 8, 10, 6); }
+  else if (k === 'lab') { cx.fillStyle = '#e8d0ff'; cx.fillRect(x + 4, y + 7, 3, 5); cx.fillRect(x + 9, y + 7, 3, 5); }
+  else if (k === 'def') { cx.strokeStyle = '#fff'; cx.strokeRect(x + 4.5, y + 6.5, 7, 6); }
+  else cx.fillRect(x + 3, y + 7, 10, 6);
+  if (night > .3) { cx.fillStyle = '#ffe27a'; cx.fillRect(x + 3, y + 5, 2, 2); }
+  for (let i = 0; i < b.l; i++) { cx.fillStyle = '#ffd34d'; cx.fillRect(x + 2 + i * 3, y + 13, 2, 2); }
+  if (b.l >= 3) { cx.strokeStyle = '#ffd34d'; cx.strokeRect(x + .5, y + .5, 15, 15); }
+}
+function draw() {
+  const W = cv.width, H = cv.height, vw = W / zoom, vh = H / zoom, night = 1 - sun();
+  cx.setTransform(1, 0, 0, 1, 0, 0); cx.imageSmoothingEnabled = false; cx.fillStyle = '#05060f'; cx.fillRect(0, 0, W, H);
+  const mw = MW * TS, mh = MH * TS;
+  let camx = mw <= vw ? (mw - vw) / 2 : Math.max(0, Math.min(mw - vw, G.px - vw / 2));
+  let camy = mh <= vh ? (mh - vh) / 2 : Math.max(0, Math.min(mh - vh, G.py - vh / 2));
+  camx = Math.round(camx * zoom) / zoom; camy = Math.round(camy * zoom) / zoom;
+  cx.setTransform(zoom, 0, 0, zoom, -camx * zoom, -camy * zoom);
+  cx.drawImage(mapCv, 0, 0);
+  for (const b of G.b) drawB(b, night);
+  const ents = NPCS.map(n => ({y: n.y * TS + 8, f: () => spr(n.x * TS + 8, n.y * TS + 8, n.col, [0, 1], 0)})).concat([{y: G.py, f: () => spr(G.px, G.py, '#f4f4f8', dir, step)}]).sort((a, b) => a.y - b.y);
+  ents.forEach(e => e.f());
+  cx.setTransform(1, 0, 0, 1, 0, 0); cx.fillStyle = `rgba(5,10,45,${(.58 * night).toFixed(2)})`; cx.fillRect(0, 0, W, H);
+}
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2); cv.width = Math.floor(innerWidth * dpr); cv.height = Math.floor(innerHeight * dpr);
+  zoom = Math.max(2, Math.round(cv.height / (TS * 14)));
+}
+
+/* ---------- loop, entrada, áudio, tela cheia ---------- */
+let last = 0;
+function loop(t) {
+  const dt = Math.min(.1, (t - last) / 1000 || 0); last = t;
+  if (G && running) { if (!open) update(dt); draw(); hudT -= dt; if (hudT <= 0) { hud(); hudT = .25; } }
+  requestAnimationFrame(loop);
+}
+const KMAP = {ArrowLeft: 'left', a: 'left', A: 'left', ArrowRight: 'right', d: 'right', D: 'right', ArrowUp: 'up', w: 'up', W: 'up', ArrowDown: 'down', s: 'down', S: 'down'};
+addEventListener('keydown', e => {
+  audio0();
+  if (open) { if (/^[1-9]$/.test(e.key)) { const b = $('panel').querySelectorAll('button')[+e.key - 1]; if (b && !b.disabled) b.click(); } else if (e.key === 'Escape' && closable) close(); return; }
+  if (!running) return;
+  const k = KMAP[e.key]; if (k) { keys[k] = true; update.axis = (k === 'left' || k === 'right') ? 'x' : 'y'; e.preventDefault(); }
+  else if (!e.repeat && (e.key === 'e' || e.key === 'E' || e.key === ' ' || e.key === 'Enter')) { interact(); e.preventDefault(); }
+  else if (e.key === 'b' || e.key === 'B') buildMenu(); else if (e.key === 'm' || e.key === 'M' || e.key === 'Escape') mainMenu(); else if (e.key === 'f' || e.key === 'F') fs();
+});
+addEventListener('keyup', e => { const k = KMAP[e.key]; if (k) keys[k] = false; });
+addEventListener('blur', () => keys = {});
+document.querySelectorAll('#pad button').forEach(b => {
+  const k = b.dataset.k;
+  b.addEventListener('pointerdown', e => { e.preventDefault(); audio0(); if (k === 'act') interact(); else { keys[k] = true; update.axis = (k === 'left' || k === 'right') ? 'x' : 'y'; } });
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => b.addEventListener(ev, () => { if (k !== 'act') keys[k] = false; }));
+});
+function fs() {
+  const d = document, el = d.documentElement;
+  if (!d.fullscreenElement && !d.webkitFullscreenElement) (el.requestFullscreen || el.webkitRequestFullscreen || (() => toast('Tela cheia não suportada neste navegador.'))).call(el);
+  else (d.exitFullscreen || d.webkitExitFullscreen).call(d);
+}
+function audio0() {
+  if (au || muted) return;
+  try {
+    au = new (window.AudioContext || window.webkitAudioContext)(); const m = au.createGain(); m.gain.value = .04; m.connect(au.destination);
+    [55, 82.4, 110].forEach((f, i) => { const o = au.createOscillator(); o.type = 'sine'; o.frequency.value = f; o.detune.value = i * 6; o.connect(m); o.start(); });
+    const n = [220, 261.6, 329.6, 392, 329.6, 261.6, 196]; let i = 0;
+    setInterval(() => {
+      if (muted || au.state !== 'running') return;
+      const o = au.createOscillator(), g = au.createGain(); o.type = 'triangle'; o.frequency.value = n[i++ % n.length] * (Math.random() < .2 ? 2 : 1);
+      g.gain.setValueAtTime(.03, au.currentTime); g.gain.exponentialRampToValueAtTime(.0001, au.currentTime + 2.5); o.connect(g); g.connect(au.destination); o.start(); o.stop(au.currentTime + 2.6);
+    }, 1800);
+  } catch (e) {}
+}
+$('bSnd').onclick = () => { muted = !muted; $('bSnd').textContent = muted ? '🔇' : '🔊'; if (au) muted ? au.suspend() : au.resume(); else if (!muted) audio0(); };
+$('bFs').onclick = fs; $('sFs').onclick = fs;
+$('bBuild').onclick = () => !open && running && buildMenu();
+$('bMenu').onclick = () => !open && running && mainMenu();
+function start(cont) {
+  close(); if (!(cont && load())) newGame();
+  drawMap(); $('start').classList.remove('on'); running = true; keys = {}; hud(); audio0();
+  if (!cont) say('Chegada à Lua', 'Você pousou com 2 colonos. Colete gelo, minérios e rochas (E), construa uma habitação, oxigênio, energia e comida (B) e fale com os colegas. A Terra observa.');
+}
+mapCv = document.createElement('canvas'); mapCv.width = MW * TS; mapCv.height = MH * TS; mapCx = mapCv.getContext('2d');
+$('sNew').onclick = () => start(false);
+$('sCont').onclick = () => start(true);
+if (!localStorage.getItem(SAVE)) $('sCont').style.display = 'none';
+addEventListener('resize', resize); resize();
+setInterval(() => running && G && save(true), 30000);
+requestAnimationFrame(loop);
+})();
